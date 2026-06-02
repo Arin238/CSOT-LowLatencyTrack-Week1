@@ -1,7 +1,6 @@
 #include <cmath>
 #include <array>
-#include <unordered_map>
-#include <string>
+#include <string_view>
 #include <vector>
 
 #include "../include/strategy.hpp"
@@ -9,63 +8,93 @@
 namespace {
 
 struct SymbolState {
-    std::array<double, 64> mids{};
+    double sum = 0.0;
+    double sum_sq = 0.0;
     uint32_t count = 0;
     uint32_t head = 0;
-    int32_t position = 0; // -1,0,+1
+    int32_t position = 0;
+    std::array<double, 64> mids{};
 };
+
+static inline __attribute__((always_inline))
+bool process_tick(SymbolState& st, const csot::Tick& t, csot::Order& order) {
+    const double mid = (t.bid_px + t.ask_px) * 0.5;
+
+    if (st.count == 64) {
+        const double old = st.mids[st.head];
+        st.sum -= old;
+        st.sum_sq -= old * old;
+    }
+
+    st.mids[st.head] = mid;
+    st.sum += mid;
+    st.sum_sq += mid * mid;
+
+    st.head = (st.head + 1) & 63;
+    if (st.count < 64) ++st.count;
+
+    if (__builtin_expect(st.count < 64, 0)) return false;
+
+    const double mean = st.sum * 0.015625; // 1.0 / 64.0
+    const double variance = (st.sum_sq * 0.015625) - (mean * mean);
+
+    if (__builtin_expect(variance < 1e-18, 0)) return false; // stddev < 1e-9
+
+    const double diff = mid - mean;
+    const double diff_sq = diff * diff;
+
+    if (st.position == 0) {
+        if (__builtin_expect(diff_sq >= 4.0 * variance, 0)) {
+            if (diff > 0) {
+                order = csot::Order{csot::Order::Side::SELL, t.symbol, t.bid_px, 1};
+                return true;
+            } else {
+                order = csot::Order{csot::Order::Side::BUY, t.symbol, t.ask_px, 1};
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (__builtin_expect(diff_sq <= 0.25 * variance, 0)) {
+        if (st.position > 0) {
+            order = csot::Order{csot::Order::Side::SELL, t.symbol, t.bid_px, static_cast<uint32_t>(st.position)};
+            return true;
+        } else {
+            order = csot::Order{csot::Order::Side::BUY, t.symbol, t.ask_px, static_cast<uint32_t>(-st.position)};
+            return true;
+        }
+    }
+
+    return false;
+}
 
 class SpecStrategy : public csot::Strategy {
 public:
     void on_init() override {
-        states_.reserve(128);
+        symbol_count_ = 0;
     }
 
     std::vector<csot::Order> on_tick(const csot::Tick& t) override {
-        const double mid = (t.bid_px + t.ask_px) * 0.5;
-
-        std::string key(t.symbol);
-        auto &st = states_[key];
-
-        st.mids[st.head] = mid;
-        st.head = (st.head + 1) & 63;
-        if (st.count < 64) ++st.count;
-
-        if (st.count < 64) return {};
-
-        double sum = 0.0;
-        for (double x : st.mids) sum += x;
-        const double mean = sum / 64.0;
-
-        double sq = 0.0;
-        for (double x : st.mids) {
-            const double d = x - mean;
-            sq += d * d;
-        }
-        const double variance = sq / 64.0;
-        const double stddev = std::sqrt(variance);
-
-        if (stddev < 1e-9) return {};
-
-        const double z = (mid - mean) / stddev;
-        const double abs_z = std::abs(z);
-
-        if (st.position == 0) {
-            if (z >= 2.0) {
-                return {csot::Order{csot::Order::Side::SELL, t.symbol, t.bid_px, 1}};
+        std::string_view sv = t.symbol;
+        uint32_t id = 0xFFFFFFFF;
+        for (uint32_t i = 0; i < symbol_count_; ++i) {
+            if (symbols_[i] == sv) {
+                id = i;
+                break;
             }
-            if (z <= -2.0) {
-                return {csot::Order{csot::Order::Side::BUY, t.symbol, t.ask_px, 1}};
-            }
-            return {};
         }
 
-        if (st.position > 0 && abs_z <= 0.5) {
-            return {csot::Order{csot::Order::Side::SELL, t.symbol, t.bid_px, static_cast<uint32_t>(st.position)}};
+        if (__builtin_expect(id == 0xFFFFFFFF, 0)) {
+            if (symbol_count_ == 64) return {};
+            id = symbol_count_++;
+            symbols_[id] = sv;
         }
 
-        if (st.position < 0 && abs_z <= 0.5) {
-            return {csot::Order{csot::Order::Side::BUY, t.symbol, t.ask_px, static_cast<uint32_t>(-st.position)}};
+        auto &st = states_[id];
+        csot::Order order;
+        if (process_tick(st, t, order)) {
+            return {order};
         }
 
         return {};
@@ -73,18 +102,24 @@ public:
 
     void on_fill(const csot::Order& o, double fill_price, uint32_t fill_qty) override {
         (void)fill_price;
-        std::string key(o.symbol);
-        auto it = states_.find(key);
-        if (it == states_.end()) return;
-        if (o.side == csot::Order::Side::BUY) {
-            it->second.position += static_cast<int32_t>(fill_qty);
-        } else {
-            it->second.position -= static_cast<int32_t>(fill_qty);
+        std::string_view sv = o.symbol;
+        for (uint32_t i = 0; i < symbol_count_; ++i) {
+            if (symbols_[i] == sv) {
+                auto &st = states_[i];
+                if (o.side == csot::Order::Side::BUY) {
+                    st.position += static_cast<int32_t>(fill_qty);
+                } else {
+                    st.position -= static_cast<int32_t>(fill_qty);
+                }
+                return;
+            }
         }
     }
 
 private:
-    std::unordered_map<std::string, SymbolState> states_;
+    std::array<std::string_view, 64> symbols_{};
+    std::array<SymbolState, 64> states_{};
+    uint32_t symbol_count_ = 0;
 };
 
 } // anonymous namespace

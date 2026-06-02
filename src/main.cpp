@@ -5,7 +5,7 @@ int main() {
 	Engine engine;
 
 	// Load a small sample dataset shipped with the repo.
-	engine.load_ticks("data/tiny.csv");
+	engine.load_ticks("data/synthetic_small.csv");
 
 	// Create the strategy from the factory symbol in the ABI header.
 	csot::Strategy* strat = create_strategy();
