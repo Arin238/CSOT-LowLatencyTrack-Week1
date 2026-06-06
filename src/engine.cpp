@@ -10,6 +10,18 @@ void Engine::load_ticks(const std::string& path) {
 
     std::string line;
 
+    // Count lines first for precise reserve (avoid reallocation invalidating string_views)
+    size_t line_count = 0;
+    while (std::getline(file, line)) ++line_count;
+    if (line_count > 0) --line_count; // subtract header
+
+    // Seek back to beginning
+    file.clear();
+    file.seekg(0);
+
+    // Reserve exact capacity — no reallocation means string_views stay valid
+    ticks_.reserve(line_count);
+
     // skip header
     std::getline(file, line);
 
@@ -18,35 +30,34 @@ void Engine::load_ticks(const std::string& path) {
 
         std::string token;
 
-        auto st = std::make_unique<StoredTick>();
+        ticks_.emplace_back();
+        auto& st = ticks_.back();
 
         std::getline(ss, token, ',');
-        st->tick.timestamp_ns = std::stoull(token);
+        st.tick.timestamp_ns = std::stoull(token);
 
         std::getline(ss, token, ',');
-        st->backing = token;
-        st->tick.symbol = std::string_view(st->backing);
+        st.backing = token;
+        st.tick.symbol = std::string_view(st.backing);
 
         std::getline(ss, token, ',');
-        st->tick.bid_px = std::stod(token);
+        st.tick.bid_px = std::stod(token);
 
         std::getline(ss, token, ',');
-        st->tick.ask_px = std::stod(token);
+        st.tick.ask_px = std::stod(token);
 
         std::getline(ss, token, ',');
-        st->tick.bid_qty = std::stoul(token);
+        st.tick.bid_qty = std::stoul(token);
 
         std::getline(ss, token, ',');
-        st->tick.ask_qty = std::stoul(token);
-
-        ticks.push_back(std::move(st));
+        st.tick.ask_qty = std::stoul(token);
     }
 
-    std::cout << "Loaded " << ticks.size() << " ticks\n";
+    std::cout << "Loaded " << ticks_.size() << " ticks\n";
     
-    if (!ticks.empty()) {
-        const auto& first = *ticks.front();
-        const auto& last = *ticks.back();
+    if (!ticks_.empty()) {
+        const auto& first = ticks_.front();
+        const auto& last = ticks_.back();
 
         std::cout << "First tick:\n";
         std::cout << first.tick.symbol << " "
@@ -63,8 +74,9 @@ void Engine::load_ticks(const std::string& path) {
 void Engine::run(csot::Strategy& strategy) {
     strategy.on_init();
 
-    for (const auto& stptr : ticks) {
-        const csot::Tick& t = stptr->tick;
+    const size_t n = ticks_.size();
+    for (size_t i = 0; i < n; ++i) {
+        const csot::Tick& t = ticks_[i].tick;
 
         auto t0 = std::chrono::steady_clock::now();
         auto orders = strategy.on_tick(t);

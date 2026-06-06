@@ -3,7 +3,7 @@ project(csot_quant_platform CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
-set(CMAKE_CXX_FLAGS_RELEASE "-O2 -march=native -flto")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -flto -fno-exceptions -fno-rtti -funroll-loops -fomit-frame-pointer -fno-stack-protector -fno-math-errno -fno-plt")
 
 add_compile_options(
     -Wall -Wextra -Wpedantic

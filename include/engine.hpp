@@ -8,10 +8,10 @@
 
 namespace csot { struct Tick; }
 
-// Internal storage for ticks: we must own the symbol string data so that
+// Internal storage for ticks: we own the symbol string data so that
 // `std::string_view` fields in `csot::Tick` remain valid while the engine
-// replays ticks. We allocate each stored tick on the heap so addresses remain
-// stable across vector growth.
+// replays ticks. We store everything in a flat contiguous vector (pre-reserved)
+// for maximum cache locality during replay.
 struct StoredTick {
     csot::Tick tick;
     std::string backing;
@@ -23,6 +23,6 @@ public:
     void run(csot::Strategy& strategy);
 
 private:
-    std::vector<std::unique_ptr<StoredTick>> ticks;
+    std::vector<StoredTick> ticks_;   // flat, contiguous — no unique_ptr indirection
     csot::LatencyHistogram hist_;
 };
